@@ -203,11 +203,17 @@ impl ProcessState {
         })
     }
 
-    /// Initialize ProcessState with default binder path and max threads.
-    /// The meaning of zero max threads is to use the default value. It is dependent on the kernel.
-    /// DEFAULT_BINDER_PATH is "/dev/binderfs/binder".
+    /// Initialize ProcessState with the best available binder path and default max threads.
+    ///
+    /// Prefers `/dev/binderfs/binder` (Android 11+). Falls back to `/dev/binder`
+    /// (Android 10 and earlier) when the binderfs path does not exist.
     pub fn init_default() -> &'static ProcessState {
-        Self::init(crate::DEFAULT_BINDER_PATH, 0)
+        let path = if Path::new(crate::DEFAULT_BINDER_PATH).exists() {
+            crate::DEFAULT_BINDER_PATH
+        } else {
+            crate::LEGACY_BINDER_PATH
+        };
+        Self::init(path, 0)
     }
 
     /// Get binder service manager.
@@ -313,7 +319,7 @@ impl ProcessState {
             .get(&handle)
             .map(|e| (e.descriptor.clone(), e.generation));
 
-        if handle == 0 {
+        if handle == 0 && crate::sdk_at_least(30) {
             let original_call_restriction = thread_state::call_restriction();
             thread_state::set_call_restriction(CallRestriction::None);
             thread_state::ping_binder(handle)?;
@@ -351,11 +357,15 @@ impl ProcessState {
                 // Step 3: pin is live in the kernel. Query the interface
                 // descriptor. On failure we MUST undo the pin so the
                 // kernel does not leak a binder_ref slot.
-                let desc = match thread_state::query_interface(handle) {
-                    Ok(s) => s,
-                    Err(err) => {
-                        undo_case_a_pin(handle);
-                        return Err(err);
+                let desc = if handle == 0 && !crate::sdk_at_least(30) {
+                    "android.os.IServiceManager".to_owned()
+                } else {
+                    match thread_state::query_interface(handle) {
+                        Ok(s) => s,
+                        Err(err) => {
+                            undo_case_a_pin(handle);
+                            return Err(err);
+                        }
                     }
                 };
                 let gen = self.next_generation.fetch_add(1, Ordering::Relaxed);

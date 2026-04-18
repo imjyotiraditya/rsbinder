@@ -1122,7 +1122,7 @@ pub(crate) fn _handle_commands() -> Result<()> {
 pub fn check_interface(reader: &mut Parcel, descriptor: &str) -> Result<bool> {
     let mut strict_policy: i32 = reader.read()?;
 
-    let header = THREAD_STATE.with(|thread_state| -> Result<u32> {
+    THREAD_STATE.with(|thread_state| -> Result<()> {
         let mut thread_state = thread_state.borrow_mut();
 
         if (thread_state.last_transaction_binder_flags() & FLAG_ONEWAY) != 0 {
@@ -1134,12 +1134,18 @@ pub fn check_interface(reader: &mut Parcel, descriptor: &str) -> Result<bool> {
         let work_source: i32 = reader.read()?;
         thread_state.set_calling_work_source_uid_without_propagation(work_source as _);
 
-        reader.read()
+        Ok(())
     })?;
 
-    if header != INTERFACE_HEADER {
-        log::error!("Expecting header {INTERFACE_HEADER:#x} but found {header:#x}.");
-        return Ok(false);
+    // Android 10 (API 29) does not include the INTERFACE_HEADER magic word in
+    // the transaction header. All other platforms (Android 11+ and Linux) do,
+    // so we validate it there.
+    if crate::sdk_at_least(30) {
+        let header: u32 = reader.read()?;
+        if header != INTERFACE_HEADER {
+            log::error!("Expecting header {INTERFACE_HEADER:#x} but found {header:#x}.");
+            return Ok(false);
+        }
     }
 
     let parcel_interface: String = reader.read()?;
